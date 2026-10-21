@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Free unZIPper
 // @namespace    https://github.com/grmpnk
-// @version      1
+// @version      1.1
 // @description  Unzip ZIP files directly in your browser. Supports password-protected files, with no file uploads to external servers and no additional software required.
 // @author       grmpneko
 // @match        http://*/*
@@ -80,9 +80,9 @@ th.ck,td.ck{width:36px;text-align:center;padding:8px 10px;cursor:default}
 th.ck:hover{color:var(--mute)}
 th.ck input,td.ck input{accent-color:var(--a);width:16px;height:16px;margin:0;cursor:pointer;vertical-align:middle}
 td{padding:8px 10px;border-top:1px solid var(--line);word-break:break-all}
-td:nth-child(3){color:var(--mute)}
+td:nth-child(4){color:var(--mute)}
 td.num{text-align:right;white-space:nowrap}
-td:nth-child(6){white-space:nowrap;color:var(--mute)}
+td:nth-child(7){white-space:nowrap;color:var(--mute)}
 td.fn{cursor:pointer}
 td.fn:hover{color:var(--b);text-decoration:underline}
 tbody tr:hover{background:rgba(255,255,255,.06)}
@@ -104,6 +104,14 @@ pre.pv{overflow:auto;background:#14162a;padding:14px;margin:0;white-space:pre-wr
 .dlg .err{color:#ff8a8a;font-size:12px;min-height:1em}
 .dlg label{display:flex;gap:8px;align-items:center;color:var(--mute);font-size:12px}
 .dlg .row{display:flex;gap:8px;justify-content:flex-end}
+.grid{flex:1;min-height:0;overflow:auto;display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;align-content:start;padding:2px}
+.it{cursor:pointer;border:1px solid var(--line);border-radius:12px;background:rgba(255,255,255,.05);overflow:hidden;display:flex;flex-direction:column;height: 300px;}
+.it:hover{border-color:var(--b)}
+.it.cur{border-color:var(--a);box-shadow:0 0 0 2px var(--a)}
+.th{aspect-ratio:1;display:flex;align-items:center;justify-content:center;font-size:34px;background:#000}
+.th img{width:100%;height:100%;object-fit:contain}
+.it .cap{padding:6px 8px;font-size:12px;word-break:break-all}
+.it .cap small{display:block;color:var(--mute)}
 `;
 
 // CSP でインライン <style> が止められても効くよう、CSSOM 経由で当てる
@@ -132,9 +140,9 @@ const fmt=n=>{
 // File types
 // ==========================================
 const MIME={png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',gif:'image/gif',webp:'image/webp',bmp:'image/bmp',svg:'image/svg+xml',avif:'image/avif',ico:'image/x-icon',
-    mp4:'video/mp4',m4v:'video/mp4',webm:'video/webm',mov:'video/quicktime',ogv:'video/ogg',mkv:'video/x-matroska',
-    mp3:'audio/mpeg',wav:'audio/wav',ogg:'audio/ogg',m4a:'audio/mp4',flac:'audio/flac',aac:'audio/aac',opus:'audio/ogg',
-    pdf:'application/pdf'};
+            mp4:'video/mp4',m4v:'video/mp4',webm:'video/webm',mov:'video/quicktime',ogv:'video/ogg',mkv:'video/x-matroska',
+            mp3:'audio/mpeg',wav:'audio/wav',ogg:'audio/ogg',m4a:'audio/mp4',flac:'audio/flac',aac:'audio/aac',opus:'audio/ogg',
+            pdf:'application/pdf'};
 const TEXT=new Set(['txt','md','json','csv','tsv','log','js','ts','css','html','htm','xml','yml','yaml','ini','cfg','conf','sh','py','java','c','h','cpp','srt','vtt','toml']);
 const extOf=n=>{const b=n.split('/').pop();return b.includes('.')?b.split('.').pop().toLowerCase():'';};
 const mimeOf=n=>MIME[extOf(n)]||'';
@@ -259,11 +267,24 @@ const dl=(doc,name,url)=>{
     a.href=url;a.download=name;
     doc.body.append(a);a.click();a.remove();
 };
+const ICON={image:'🖼',video:'🎞',audio:'🎵',pdf:'📄',text:'📝',other:'📦'};
 
-// list: 表示中のテーブル順のエントリ配列 / idx0: 最初に表示するindex
+// パスワードダイアログを出さずに取得(一覧のサムネイル用)。開けなければ null
+const quietBlob=async e=>{
+    const get=pw=>e.ent.getData(new zip.BlobWriter(mimeOf(e.name)),{password:pw,checkSignature:true});
+    if(!e.enc)return get();
+    const cand=[...usedPw,...pwList].filter((x,i,a)=>x!=null&&a.indexOf(x)===i);
+    for(const pw of cand){
+        try{return await get(pw);}
+        catch(err){if(!isPwErr(err))return null;}
+    }
+    return null;
+};
+
 const preview=(win,list,idx0,blob0)=>{
     const doc=win.document;
     let idx=idx0,url=null,el=null,name='',busy=false;
+    let listEl=null,thumbUrls=[],io=null;
     const ov=doc.createElement('div');
     ov.className='ov';
     const bar=doc.createElement('div');
@@ -277,7 +298,15 @@ const preview=(win,list,idx0,blob0)=>{
         b.addEventListener('click',fn);
         return b;
     };
-    const close=()=>{ov.remove();if(url)URL.revokeObjectURL(url);doc.removeEventListener('keydown',onKey);};
+
+    const closeList=()=>{
+        if(io){io.disconnect();io=null;}
+        thumbUrls.forEach(u=>URL.revokeObjectURL(u));
+        thumbUrls=[];
+        if(listEl){listEl.remove();listEl=null;}
+        if(el)el.style.display='';
+    };
+    const close=()=>{closeList();ov.remove();if(url)URL.revokeObjectURL(url);doc.removeEventListener('keydown',onKey);};
 
     const setContent=(n,blob)=>{
         if(url)URL.revokeObjectURL(url);
@@ -311,10 +340,10 @@ const preview=(win,list,idx0,blob0)=>{
         ov.append(el);
     };
 
-    const go=async dir=>{
-        if(busy||list.length<2)return;
+    // n 番目を開く(一覧からも前後移動からも共通)
+    const openAt=async n=>{
+        if(busy)return;
         busy=true;
-        const n=(idx+dir+list.length)%list.length;
         try{
             const blob=await getBlob(doc,list[n]);
             if(blob){idx=n;setContent(list[n].name,blob);}
@@ -324,10 +353,73 @@ const preview=(win,list,idx0,blob0)=>{
             busy=false;
         }
     };
+    const go=dir=>{
+        if(busy||list.length<2||listEl)return;
+        openAt((idx+dir+list.length)%list.length);
+    };
+
+    // ---- 一覧表示 ----
+    const showList=()=>{
+        if(el)el.style.display='none';
+        listEl=doc.createElement('div');
+        listEl.className='grid';
+        io=new win.IntersectionObserver(ents=>{
+            for(const en of ents){
+                if(!en.isIntersecting)continue;
+                io.unobserve(en.target);
+                loadThumb(en.target);
+            }
+        },{root:listEl,rootMargin:'200px'});
+
+        list.forEach((e,i)=>{
+            const kind=kindOf(e.name);
+            const it=doc.createElement('div');
+            it.className='it'+(i===idx?' cur':'');
+            it.title=e.path;
+            const th=doc.createElement('div');
+            th.className='th';
+            th.textContent=e.enc?'🔒':ICON[kind];
+            const cap=doc.createElement('div');
+            cap.className='cap';
+            cap.textContent=e.name;
+            const sm=doc.createElement('small');
+            sm.textContent=fmt(e.size);
+            cap.append(sm);
+            it.append(th,cap);
+            it.addEventListener('click',()=>{
+                closeList();
+                if(i===idx)return;
+                openAt(i);
+            });
+            if(kind==='image'&&e.size<=30*1024*1024){
+                it._e=e;it._th=th;
+                io.observe(it);
+            }
+            listEl.append(it);
+        });
+        ov.append(listEl);
+        const cur=listEl.children[idx];
+        if(cur)cur.scrollIntoView({block:'center'});
+    };
+
+    const loadThumb=async it=>{
+        try{
+            const blob=await quietBlob(it._e);
+            if(!blob||!listEl)return; // 開けない/すでに一覧を閉じた
+            const u=URL.createObjectURL(blob);
+            thumbUrls.push(u);
+            const img=doc.createElement('img');
+            img.src=u;
+            it._th.textContent='';
+            it._th.append(img);
+        }catch(err){}
+    };
+
+    const toggleList=()=>{listEl?closeList():showList();};
 
     const onKey=e=>{
         if(doc.querySelector('.dlgwrap'))return; // password dialog is open
-        if(e.key==='Escape')close();
+        if(e.key==='Escape'){listEl?closeList():close();}
         else if(e.key==='ArrowLeft')go(-1);
         else if(e.key==='ArrowRight')go(1);
     };
@@ -337,6 +429,7 @@ const preview=(win,list,idx0,blob0)=>{
     if(list.length<2){prevBtn.disabled=true;nextBtn.disabled=true;}
     bar.append(
         title,
+        btn('☰ List',toggleList),
         prevBtn,
         nextBtn,
         btn('Open in new tab',()=>win.open(url,'_blank')),
@@ -371,9 +464,13 @@ const openEntry=async(win,g,tr)=>{
 const build=groups=>{
     const total=groups.reduce((n,g)=>n+g.entries.length,0);
     const cards=groups.map((g,gi)=>{
-        const rows=g.entries.map((e,ei)=>`<tr data-g="${gi}" data-i="${ei}"><td class="ck"><input type="checkbox" class="rc"></td><td class="fn" data-v="${esc(e.name.toLowerCase())}">${e.enc?'🔒 ':''}${esc(e.name)}</td><td data-v="${esc(e.dir.toLowerCase())}">${esc(e.dir||'/')}</td><td data-v="${esc(e.ext)}">${esc(e.ext)}</td><td class="num" data-v="${e.size}">${fmt(e.size)}</td><td data-v="${e.date}">${new Date(e.date).toLocaleString('en-US')}</td></tr>`).join('');
+        const rows=g.entries.map((e,ei)=>{
+            const m=e.name.replace(/\.[^.]*$/,'').match(/(\d+)\D*$/);
+            const no=m?parseInt(m[1],10):'';
+            return `<tr data-g="${gi}" data-i="${ei}"><td class="ck"><input type="checkbox" class="rc"></td><td class="fn" data-v="${esc(e.name.toLowerCase())}">${e.enc?'🔒 ':''}${esc(e.name)}</td><td class="num" data-v="${no}">${no}</td><td data-v="${esc(e.dir.toLowerCase())}">${esc(e.dir||'/')}</td><td data-v="${esc(e.ext)}">${esc(e.ext)}</td><td class="num" data-v="${e.size}">${fmt(e.size)}</td><td data-v="${e.date}">${new Date(e.date).toLocaleString('en-US')}</td></tr>`;
+        }).join('');
         const size=g.entries.reduce((n,e)=>n+e.size,0);
-        return `<details class="card" data-g="${gi}" open><summary><span class="chev"></span><span class="nm">${esc(g.name)}</span><span class="meta">${fmt(size)}</span><span class="badge">${g.entries.length}</span></summary><div class="tb"><button type="button" class="sv" disabled>Save selected (0)</button></div><div class="wrap"><table><thead><tr><th class="ck"><input type="checkbox" class="all"></th><th data-t="s">Name</th><th data-t="s">Path</th><th data-t="s">Type</th><th data-t="n">Size</th><th data-t="n">Modified</th></tr></thead><tbody>${rows}</tbody></table></div></details>`;
+        return `<details class="card" data-g="${gi}" open><summary><span class="chev"></span><span class="nm">${esc(g.name)}</span><span class="meta">${fmt(size)}</span><span class="badge">${g.entries.length}</span></summary><div class="tb"><button type="button" class="sv" disabled>Save selected (0)</button></div><div class="wrap"><table><thead><tr><th class="ck"><input type="checkbox" class="all"></th><th data-t="s">Name</th><th data-t="k">No.</th><th data-t="s">Path</th><th data-t="s">Type</th><th data-t="n">Size</th><th data-t="n">Modified</th></tr></thead><tbody>${rows}</tbody></table></div></details>`;
     }).join('');
     return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Unziper</title></head><body><main><header><h1>Unziper</h1><div class="sub">${total} files in ${groups.length} archives</div></header>${cards}</main></body></html>`;
 };
@@ -388,10 +485,19 @@ const initSort=doc=>{
                 ths.forEach(x=>x.classList.remove('asc','desc'));
                 th.classList.add(asc?'asc':'desc');
                 const num=th.dataset.t==='n';
+                const key=th.dataset.t==='k';
                 const rows=[...t.tBodies[0].rows];
                 rows.sort((a,b)=>{
                     const x=a.cells[i].dataset.v,y=b.cells[i].dataset.v;
-                    const r=num?x-y:x.localeCompare(y);
+                    let r;
+                    if(key){
+                        const nx=x===''?Infinity:+x, ny=y===''?Infinity:+y;
+                        r=nx===ny?0:(nx<ny?-1:1);
+                        if(r===0)r=a.cells[1].dataset.v.localeCompare(b.cells[1].dataset.v,undefined,{numeric:true});
+                        // 数字なし(Infinity)は昇順・降順どちらでも反転されるだけなので、そのまま扱う
+                    }else{
+                        r=num?x-y:x.localeCompare(y);
+                    }
                     return asc?r:-r;
                 });
                 t.tBodies[0].append(...rows);
