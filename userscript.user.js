@@ -284,7 +284,28 @@ const quietBlob=async e=>{
 const preview=(win,list,idx0,blob0)=>{
     const doc=win.document;
     let idx=idx0,url=null,el=null,name='',busy=false;
-    let listEl=null,thumbUrls=[],io=null;
+    let listEl=null,io=null,closed=false;
+    const thumbCache=new Map(); // entry -> objectURL(一度読み込んだら保持)
+    const thumbJobs=new Map();  // entry -> 読み込み中の Promise
+    const setThumb=(th,u)=>{
+        const img=doc.createElement('img');
+        img.src=u;
+        th.textContent='';
+        th.append(img);
+    };
+    const getThumb=e=>{
+        if(thumbCache.has(e))return Promise.resolve(thumbCache.get(e));
+        if(!thumbJobs.has(e)){
+            thumbJobs.set(e,
+                          quietBlob(e).then(b=>{
+                if(!b||closed)return null;
+                const u=URL.createObjectURL(b);
+                thumbCache.set(e,u);
+                return u;
+            }).catch(()=>null).finally(()=>thumbJobs.delete(e)));
+        }
+        return thumbJobs.get(e);
+    };
     const ov=doc.createElement('div');
     ov.className='ov';
     const bar=doc.createElement('div');
@@ -301,12 +322,18 @@ const preview=(win,list,idx0,blob0)=>{
 
     const closeList=()=>{
         if(io){io.disconnect();io=null;}
-        thumbUrls.forEach(u=>URL.revokeObjectURL(u));
-        thumbUrls=[];
         if(listEl){listEl.remove();listEl=null;}
         if(el)el.style.display='';
     };
-    const close=()=>{closeList();ov.remove();if(url)URL.revokeObjectURL(url);doc.removeEventListener('keydown',onKey);};
+    const close=()=>{
+        closed=true;
+        closeList();
+        ov.remove();
+        if(url)URL.revokeObjectURL(url);
+        thumbCache.forEach(u=>URL.revokeObjectURL(u)); // プレビューを完全に閉じる時だけ破棄
+        thumbCache.clear();
+        doc.removeEventListener('keydown',onKey);
+    };
 
     const setContent=(n,blob)=>{
         if(url)URL.revokeObjectURL(url);
@@ -392,8 +419,13 @@ const preview=(win,list,idx0,blob0)=>{
                 openAt(i);
             });
             if(kind==='image'&&e.size<=30*1024*1024){
-                it._e=e;it._th=th;
-                io.observe(it);
+                const cached=thumbCache.get(e);
+                if(cached){
+                    setThumb(th,cached); // キャッシュ済みなら即表示
+                }else{
+                    it._e=e;it._th=th;
+                    io.observe(it);
+                }
             }
             listEl.append(it);
         });
@@ -403,16 +435,8 @@ const preview=(win,list,idx0,blob0)=>{
     };
 
     const loadThumb=async it=>{
-        try{
-            const blob=await quietBlob(it._e);
-            if(!blob||!listEl)return; // 開けない/すでに一覧を閉じた
-            const u=URL.createObjectURL(blob);
-            thumbUrls.push(u);
-            const img=doc.createElement('img');
-            img.src=u;
-            it._th.textContent='';
-            it._th.append(img);
-        }catch(err){}
+        const u=await getThumb(it._e);
+        if(u&&listEl&&it.isConnected)setThumb(it._th,u);
     };
 
     const toggleList=()=>{listEl?closeList():showList();};
@@ -634,6 +658,7 @@ const showPanel=()=>{
     head.append(
         $C('span',{props:{textContent:'ZIP Files'}}),
         $C('span',{attrs:{class:'uz-badge'},props:{textContent:sources.size}}),
+        $C('button',{attrs:{type:'button',title:'Scan this page for ZIP links'},props:{textContent:'Scan ZIP'},on:{click:()=>scan()}}),
         $C('button',{attrs:{type:'button'},props:{textContent:'×'},on:{click:()=>{panel.remove();panel=null;}}}));
     const drop=$C('div',{attrs:{class:'uz-drop'},props:{textContent:'Drop .zip files here'}});
     const go=$C('button',{attrs:{type:'button',class:'uz-primary'},props:{textContent:'Extract ZIP ('+checked.size+')',disabled:!checked.size},on:{click:()=>extract([...checked].map(k=>sources.get(k)))}});
@@ -674,5 +699,8 @@ const scan=()=>{
     }
     showPanel();
 };
+window.onload=()=>{
+    scan()
+}
 
 GM_registerMenuCommand('Scan Zip',scan);
