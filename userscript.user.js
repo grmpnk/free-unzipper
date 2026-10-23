@@ -1,12 +1,12 @@
 // ==UserScript==
 // @name         Free unZIPper
 // @namespace    https://github.com/grmpnk
-// @version      1.1
+// @version      1.2
 // @description  Unzip ZIP files directly in your browser. Supports password-protected files, with no file uploads to external servers and no additional software required.
 // @author       grmpneko
 // @match        http://*/*
 // @match        https://*/*
-// @icon         data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==
+// @icon         data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64' width='22' height='22'%3E%3Cpath d='M16 20h20l6 6h6v24a4 4 0 0 1-4 4H16a4 4 0 0 1-4-4V24a4 4 0 0 1 4-4z' fill='%23F4B400'/%3E%3Cpath d='M16 20h20l6 6H16z' fill='%23FFD54F'/%3E%3Crect x='28' y='14' width='4' height='4' fill='%23666'/%3E%3Crect x='28' y='18' width='4' height='4' fill='%23999'/%3E%3Crect x='28' y='22' width='4' height='4' fill='%23666'/%3E%3Crect x='28' y='26' width='4' height='4' fill='%23999'/%3E%3Crect x='28' y='30' width='4' height='4' fill='%23666'/%3E%3Cpath d='M37 16l11 11' stroke='%234CAF50' stroke-width='4' stroke-linecap='round'/%3E%3Cpath d='M48 27V16H37' stroke='%234CAF50' stroke-width='4' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E
 // @grant        GM_registerMenuCommand
 // @grant        GM_xmlhttpRequest
 // @grant        GM.getValue
@@ -25,6 +25,11 @@ const d=document,$S=s=>document.querySelector(s),$SA=(s,r=document)=>r.querySele
 zip.configure({useWebWorkers:false});
 
 const ZIP_ICON=`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="22" height="22"><path d="M16 20h20l6 6h6v24a4 4 0 0 1-4 4H16a4 4 0 0 1-4-4V24a4 4 0 0 1 4-4z" fill="#F4B400"/><path d="M16 20h20l6 6H16z" fill="#FFD54F"/><rect x="28" y="14" width="4" height="4" fill="#666"/><rect x="28" y="18" width="4" height="4" fill="#999"/><rect x="28" y="22" width="4" height="4" fill="#666"/><rect x="28" y="26" width="4" height="4" fill="#999"/><rect x="28" y="30" width="4" height="4" fill="#666"/><path d="M37 16l11 11" stroke="#4CAF50" stroke-width="4" stroke-linecap="round"/><path d="M48 27V16H37" stroke="#4CAF50" stroke-width="4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+
+// ZIP_ICON の右下に丸を足した favicon
+const iconHref=color=>'data:image/svg+xml,'+encodeURIComponent(ZIP_ICON.replace('</svg>','<circle cx="52" cy="52" r="11" fill="'+color+'" stroke="#fff" stroke-width="3"/></svg>'));
+const ICON_BUSY=iconHref('#9aa0a6'); // Loading: グレー
+const ICON_DONE=iconHref('#2196f3'); // 完了: 青
 
 const PANEL_CSS=`
 .uz-panel{position:fixed;top:16px;right:16px;z-index:2147483647;width:320px;max-height:70vh;display:flex;flex-direction:column;gap:10px;padding:14px;border-radius:16px;background:rgba(20,22,40,.85);border:1px solid rgba(255,255,255,.1);backdrop-filter:blur(16px);box-shadow:0 12px 40px rgba(0,0,0,.5);color:#e8eaf6;font:14px/1.5 system-ui,'Segoe UI','Hiragino Sans',sans-serif;box-sizing:border-box}
@@ -98,6 +103,8 @@ audio.pv{flex:none;background:transparent}
 iframe.pv{background:#fff}
 pre.pv{overflow:auto;background:#14162a;padding:14px;margin:0;white-space:pre-wrap;word-break:break-all;color:var(--fg);font:13px/1.5 ui-monospace,Consolas,monospace}
 .msg{color:var(--mute);text-align:center;padding:40px}
+.msg.err{color:#ff8a8a}
+.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:200;max-width:90vw;padding:10px 16px;border-radius:12px;background:#2a1520;border:1px solid rgba(255,77,109,.5);color:#ff8a8a}
 .dlgwrap{align-items:center;justify-content:center}
 .dlg{display:flex;flex-direction:column;gap:12px;width:360px;max-width:92vw;padding:20px;border-radius:16px;background:#14162a;border:1px solid var(--line)}
 .dlg input[type=password]{padding:9px 12px;border-radius:10px;border:1px solid var(--line);background:rgba(255,255,255,.06);color:var(--fg);font:inherit}
@@ -105,7 +112,7 @@ pre.pv{overflow:auto;background:#14162a;padding:14px;margin:0;white-space:pre-wr
 .dlg label{display:flex;gap:8px;align-items:center;color:var(--mute);font-size:12px}
 .dlg .row{display:flex;gap:8px;justify-content:flex-end}
 .grid{flex:1;min-height:0;overflow:auto;display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;align-content:start;padding:2px}
-.it{cursor:pointer;border:1px solid var(--line);border-radius:12px;background:rgba(255,255,255,.05);overflow:hidden;display:flex;flex-direction:column;height: 300px;}
+.it{cursor:pointer;border:1px solid var(--line);border-radius:12px;background:rgba(255,255,255,.05);overflow:hidden;display:flex;flex-direction:column;height:300px}
 .it:hover{border-color:var(--b)}
 .it.cur{border-color:var(--a);box-shadow:0 0 0 2px var(--a)}
 .th{aspect-ratio:1;display:flex;align-items:center;justify-content:center;font-size:34px;background:#000}
@@ -134,6 +141,32 @@ const fmt=n=>{
     let i=-1;
     do{n/=1024;i++;}while(n>=1024&&i<2);
     return n.toFixed(1)+' '+u[i];
+};
+
+// alert の代わりに、ページ下部に数秒だけメッセージを出す
+const toast=(doc,msg)=>{
+    const t=doc.createElement('div');
+    t.className='toast';
+    t.textContent=msg;
+    doc.body.append(t);
+    setTimeout(()=>t.remove(),5000);
+};
+
+// favicon と title の更新(新しいタブ側)
+const setIcon=(doc,href)=>{
+    const apply=()=>{
+        doc.querySelectorAll('link[rel~=icon]').forEach(l=>l.remove());
+        const l=doc.createElement('link');
+        l.rel='icon';l.type='image/svg+xml';l.href=href;
+        (doc.head||doc.documentElement).append(l);
+    };
+    apply();
+    // doc.write 直後は反映されないことがあるので、少し遅らせて再適用
+    setTimeout(apply,100);
+};
+const setStatus=(doc,title,icon)=>{
+    doc.title=title;
+    setIcon(doc,icon);
 };
 
 // ==========================================
@@ -167,7 +200,6 @@ const savePw=async pw=>{
     try{await GM.setValue('uz_pw',pwList);}catch(e){}
 };
 
-// このセッションで成功したパスワード(全カード共通)
 const usedPw=[];
 const rememberPw=pw=>{
     const i=usedPw.indexOf(pw);
@@ -178,11 +210,12 @@ const rememberPw=pw=>{
 // ==========================================
 // ZIP
 // ==========================================
-const fetchBuf=url=>new Promise((ok,ng)=>GM_xmlhttpRequest({
+const fetchBuf=(url,onProg)=>new Promise((ok,ng)=>GM_xmlhttpRequest({
     method:'GET',
     url,
     responseType:'arraybuffer',
-    anonymous:false, // Cookie を送る(認証付きのZIP用)
+    anonymous:false,
+    onprogress:r=>{if(onProg)onProg(r.loaded||0,r.total||0);},
     onload:r=>{
         if(r.status>=200&&r.status<300&&r.response)ok(r.response);
         else ng(new Error('HTTP '+r.status+' : '+url));
@@ -192,11 +225,13 @@ const fetchBuf=url=>new Promise((ok,ng)=>GM_xmlhttpRequest({
     onabort:()=>ng(new Error('Aborted : '+url))
 }));
 
-// 一覧はヘッダーだけ読む(暗号化されていてもファイル名・サイズは見られる)
-const readZip=async src=>{
-    const buf=await src.load();
+const readZip=async(src,onP=()=>{})=>{
+    onP('Downloading...');
+    const buf=await src.load((l,t)=>{
+        onP('Downloading '+(t>0?Math.round(l/t*100)+'% ('+fmt(l)+' / '+fmt(t)+')':fmt(l)));
+    });
+    onP('Reading entries...');
     const reader=new zip.ZipReader(new zip.Uint8ArrayReader(new Uint8Array(buf)));
-    // UTF-8 フラグなしのファイル名(日本のWindows製ZIPなど)は Shift_JIS として読む
     const list=await reader.getEntries({filenameEncoding:'shift_jis'});
     const entries=[];
     for(const f of list){
@@ -215,6 +250,7 @@ const readZip=async src=>{
             ent:f
         });
     }
+    onP('Done ('+entries.length+' files)');
     return {name:src.name,entries};
 };
 
@@ -235,8 +271,6 @@ const askPw=(doc,name,retry)=>new Promise(res=>{
     setTimeout(()=>inp.focus(),0);
 });
 
-// 暗号化されていれば「このセッションで成功済み → 保存済み → 入力」の順にパスワードを試す
-// 一度成功したパスワードは全カード(全ZIP)で共有される
 const getBlob=async(doc,e)=>{
     const get=pw=>e.ent.getData(new zip.BlobWriter(mimeOf(e.name)),{password:pw,checkSignature:true});
     if(!e.enc)return get();
@@ -269,7 +303,6 @@ const dl=(doc,name,url)=>{
 };
 const ICON={image:'🖼',video:'🎞',audio:'🎵',pdf:'📄',text:'📝',other:'📦'};
 
-// パスワードダイアログを出さずに取得(一覧のサムネイル用)。開けなければ null
 const quietBlob=async e=>{
     const get=pw=>e.ent.getData(new zip.BlobWriter(mimeOf(e.name)),{password:pw,checkSignature:true});
     if(!e.enc)return get();
@@ -285,8 +318,8 @@ const preview=(win,list,idx0,blob0)=>{
     const doc=win.document;
     let idx=idx0,url=null,el=null,name='',busy=false;
     let listEl=null,io=null,closed=false;
-    const thumbCache=new Map(); // entry -> objectURL(一度読み込んだら保持)
-    const thumbJobs=new Map();  // entry -> 読み込み中の Promise
+    const thumbCache=new Map();
+    const thumbJobs=new Map();
     const setThumb=(th,u)=>{
         const img=doc.createElement('img');
         img.src=u;
@@ -330,7 +363,7 @@ const preview=(win,list,idx0,blob0)=>{
         closeList();
         ov.remove();
         if(url)URL.revokeObjectURL(url);
-        thumbCache.forEach(u=>URL.revokeObjectURL(u)); // プレビューを完全に閉じる時だけ破棄
+        thumbCache.forEach(u=>URL.revokeObjectURL(u));
         thumbCache.clear();
         doc.removeEventListener('keydown',onKey);
     };
@@ -345,7 +378,6 @@ const preview=(win,list,idx0,blob0)=>{
         if(kind==='image'){
             el=doc.createElement('img');
             el.src=url;
-            // 左半分: 前 / 右半分: 次
             el.addEventListener('click',e=>{
                 const r=el.getBoundingClientRect();
                 go(e.clientX<r.left+r.width/2?-1:1);
@@ -367,7 +399,6 @@ const preview=(win,list,idx0,blob0)=>{
         ov.append(el);
     };
 
-    // n 番目を開く(一覧からも前後移動からも共通)
     const openAt=async n=>{
         if(busy)return;
         busy=true;
@@ -375,7 +406,7 @@ const preview=(win,list,idx0,blob0)=>{
             const blob=await getBlob(doc,list[n]);
             if(blob){idx=n;setContent(list[n].name,blob);}
         }catch(err){
-            win.alert('Open failed: '+err.message);
+            toast(doc,'Open failed: '+err.message);
         }finally{
             busy=false;
         }
@@ -385,7 +416,6 @@ const preview=(win,list,idx0,blob0)=>{
         openAt((idx+dir+list.length)%list.length);
     };
 
-    // ---- 一覧表示 ----
     const showList=()=>{
         if(el)el.style.display='none';
         listEl=doc.createElement('div');
@@ -421,7 +451,7 @@ const preview=(win,list,idx0,blob0)=>{
             if(kind==='image'&&e.size<=30*1024*1024){
                 const cached=thumbCache.get(e);
                 if(cached){
-                    setThumb(th,cached); // キャッシュ済みなら即表示
+                    setThumb(th,cached);
                 }else{
                     it._e=e;it._th=th;
                     io.observe(it);
@@ -442,7 +472,7 @@ const preview=(win,list,idx0,blob0)=>{
     const toggleList=()=>{listEl?closeList():showList();};
 
     const onKey=e=>{
-        if(doc.querySelector('.dlgwrap'))return; // password dialog is open
+        if(doc.querySelector('.dlgwrap'))return;
         if(e.key==='Escape'){listEl?closeList():close();}
         else if(e.key==='ArrowLeft')go(-1);
         else if(e.key==='ArrowRight')go(1);
@@ -467,7 +497,6 @@ const preview=(win,list,idx0,blob0)=>{
 
 const openEntry=async(win,g,tr)=>{
     const doc=win.document,old=doc.title;
-    // 現在のテーブル表示順(ソート後を含む)で前後移動できるようにする
     const rows=[...tr.parentElement.rows];
     const list=rows.map(r=>g.entries[+r.dataset.i]);
     const idx=rows.indexOf(tr);
@@ -476,14 +505,14 @@ const openEntry=async(win,g,tr)=>{
         const blob=await getBlob(doc,list[idx]);
         if(blob)preview(win,list,idx,blob);
     }catch(err){
-        win.alert('Open failed: '+err.message);
+        toast(doc,'Open failed: '+err.message);
     }finally{
         doc.title=old;
     }
 };
 
 // ==========================================
-// Viewer (新しいタブ側の描画)
+// Viewer (新しいタブの描画)
 // ==========================================
 const build=groups=>{
     const total=groups.reduce((n,g)=>n+g.entries.length,0);
@@ -503,7 +532,7 @@ const initSort=doc=>{
     $SA('table',doc).forEach(t=>{
         const ths=[...t.tHead.rows[0].cells];
         ths.forEach((th,i)=>{
-            if(!th.dataset.t)return; // checkbox column is not sortable
+            if(!th.dataset.t)return;
             th.addEventListener('click',()=>{
                 const asc=!th.classList.contains('asc');
                 ths.forEach(x=>x.classList.remove('asc','desc'));
@@ -518,7 +547,6 @@ const initSort=doc=>{
                         const nx=x===''?Infinity:+x, ny=y===''?Infinity:+y;
                         r=nx===ny?0:(nx<ny?-1:1);
                         if(r===0)r=a.cells[1].dataset.v.localeCompare(b.cells[1].dataset.v,undefined,{numeric:true});
-                        // 数字なし(Infinity)は昇順・降順どちらでも反転されるだけなので、そのまま扱う
                     }else{
                         r=num?x-y:x.localeCompare(y);
                     }
@@ -530,7 +558,6 @@ const initSort=doc=>{
     });
 };
 
-// チェック状態に合わせてヘッダーのチェックボックスと保存ボタンを更新
 const updSel=card=>{
     const rcs=[...card.querySelectorAll('tbody input.rc')];
     const n=rcs.filter(c=>c.checked).length;
@@ -557,7 +584,6 @@ const initSelect=doc=>{
 const saveSelected=async(win,g,card)=>{
     const doc=win.document;
     const btn=card.querySelector('button.sv');
-    // 現在のテーブル表示順で保存
     const items=[...card.querySelectorAll('tbody input.rc:checked')].map(c=>g.entries[+c.closest('tr').dataset.i]);
     if(!items.length)return;
     btn.disabled=true;
@@ -565,20 +591,19 @@ const saveSelected=async(win,g,card)=>{
         for(let k=0;k<items.length;k++){
             btn.textContent='Saving '+(k+1)+'/'+items.length+'...';
             const blob=await getBlob(doc,items[k]);
-            if(!blob)break; // password dialog cancelled
+            if(!blob)break;
             const url=URL.createObjectURL(blob);
             dl(doc,items[k].name,url);
             setTimeout(()=>URL.revokeObjectURL(url),30000);
             await new Promise(r=>setTimeout(r,300));
         }
     }catch(err){
-        win.alert('Save failed: '+err.message);
+        toast(doc,'Save failed: '+err.message);
     }finally{
         updSel(card);
     }
 };
 
-// ファイル名クリックで開く / Save selected ボタン(ソート後も tr の data 属性で対応づく)
 const initOpen=(win,groups)=>{
     win.document.addEventListener('click',e=>{
         const sv=e.target.closest&&e.target.closest('button.sv');
@@ -607,27 +632,38 @@ const render=(win,html,groups)=>{
     }
 };
 
-const simplePage=msg=>`<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Unziper</title></head><body><p>${esc(msg)}</p></body></html>`;
-
+const simplePage=(msg,err)=>`<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Loading</title></head><body><main><p class="msg${err?' err':''}">${esc(msg)}</p></main></body></html>`;
 const extract=async list=>{
     if(!list.length)return;
-    // ポップアップブロック回避: await の前に、クリック操作の流れの中で開く
+    // クリックの流れの中で、await より前にすぐ新しいタブを開く
     const win=window.open('about:blank','_blank');
-    if(!win){
-        alert('Could not open a new tab. Please allow pop-ups for this site.');
-        return;
-    }
+    if(!win)return;
     render(win,simplePage('Loading...'));
-    addCss(win.document,'body{background:#0b0d17;color:#e8eaf6;font:14px system-ui;padding:24px}');
+    setStatus(win.document,'Loading',ICON_BUSY);
+
+    const state=list.map(s=>({name:s.name,text:'Waiting...',done:false}));
+    const upd=()=>{
+        const el=win.document.querySelector('.msg');
+        if(!el)return;
+        const n=state.filter(s=>s.done).length;
+        el.style.whiteSpace='pre-line';
+        el.textContent='Loading... ('+n+'/'+state.length+')\n'+state.map(s=>s.name+' : '+s.text).join('\n');
+    };
+    upd();
+
     try{
-        const groups=await Promise.all(list.map(readZip));
+        const groups=await Promise.all(list.map((src,i)=>readZip(src,t=>{
+            state[i].text=t;
+            state[i].done=t.startsWith('Done');
+            upd();
+        })));
         render(win,build(groups),groups);
+        setStatus(win.document,'Done - ZIP files are ready',ICON_DONE);
     }catch(e){
-        render(win,simplePage('Extract failed: '+e.message));
-        addCss(win.document,'body{background:#0b0d17;color:#ff8a8a;font:14px system-ui;padding:24px}');
+        render(win,simplePage('Extract failed: '+e.message,true));
+        setStatus(win.document,'Failed - could not read ZIP files',ICON_DONE);
     }
 };
-
 // ==========================================
 // Panel
 // ==========================================
@@ -638,7 +674,7 @@ const showPanel=()=>{
     if(!$S('#uz-style')){
         const st=$C('style',{attrs:{id:'uz-style'},props:{textContent:PANEL_CSS}});
         d.head.append(st);
-        addCss(d,PANEL_CSS); // CSP 対策の保険
+        addCss(d,PANEL_CSS);
     }
     if(panel)panel.remove();
     const list=$C('div',{attrs:{class:'uz-list'}});
@@ -650,7 +686,6 @@ const showPanel=()=>{
                 checked[e.target.checked?'add':'delete'](key);
                 showPanel();
             }}}),
-            // リンクの textContent があればそれを表示、なければファイル名のまま
             $C('span',{props:{textContent:src.label||src.name}}));
         list.append(row);
     }
@@ -658,7 +693,7 @@ const showPanel=()=>{
     head.append(
         $C('span',{props:{textContent:'ZIP Files'}}),
         $C('span',{attrs:{class:'uz-badge'},props:{textContent:sources.size}}),
-        $C('button',{attrs:{type:'button',title:'Scan this page for ZIP links'},props:{textContent:'Scan ZIP'},on:{click:()=>scan()}}),
+        $C('button',{attrs:{type:'button',title:'Scan this page for ZIP links'},props:{textContent:'Scan ZIP'},on:{click:()=>scan(true)}}),
         $C('button',{attrs:{type:'button'},props:{textContent:'×'},on:{click:()=>{panel.remove();panel=null;}}}));
     const drop=$C('div',{attrs:{class:'uz-drop'},props:{textContent:'Drop .zip files here'}});
     const go=$C('button',{attrs:{type:'button',class:'uz-primary'},props:{textContent:'Extract ZIP ('+checked.size+')',disabled:!checked.size},on:{click:()=>extract([...checked].map(k=>sources.get(k)))}});
@@ -681,14 +716,15 @@ const showPanel=()=>{
     d.body.append(panel);
 };
 
-const scan=()=>{
+// show=false: ZIP リンクの検出とアイコン追加だけ行い、パネルは出さない
+const scan=(show=true)=>{
     for(const el of $SA('[href]')){
         const url=el.href;
         if(typeof url!=='string'||!url.endsWith('.zip'))continue;
         let name=url.split('/').pop();
         try{name=decodeURIComponent(name);}catch(e){}
         const label=(el.textContent||'').trim();
-        sources.set(url,{name,label,load:()=>fetchBuf(url)});
+        sources.set(url,{name,label,load:p=>fetchBuf(url,p)});
         if(el.dataset.uzIcon)continue;
         el.dataset.uzIcon='1';
         el.after($C('span',{attrs:{title:'Extract '+name},props:{innerHTML:ZIP_ICON},styles:{display:'inline-block',marginLeft:'4px',cursor:'pointer',position:'relative',top:'-6px'},on:{click:e=>{
@@ -697,10 +733,9 @@ const scan=()=>{
             extract([sources.get(url)]);
         }}}));
     }
-    showPanel();
+    if(show)showPanel();
 };
-window.onload=()=>{
-    scan()
-}
 
-GM_registerMenuCommand('Scan Zip',scan);
+window.addEventListener('load',()=>scan(false)); // 読み込み時はパネルを出さない
+
+GM_registerMenuCommand('Scan Zip',()=>scan(true));
