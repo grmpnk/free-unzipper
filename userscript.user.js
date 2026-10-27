@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Free unZIPper
+// @name         Free unArchiver (ZIP / RAR)
 // @namespace    https://github.com/grmpnk
-// @version      1.2
-// @description  Unzip ZIP files directly in your browser. Supports password-protected files, with no file uploads to external servers and no additional software required.
+// @version      1.3
+// @description  Unzip ZIP / RAR files directly in your browser. Supports password-protected files, with no file uploads to external servers and no additional software required.
 // @author       grmpneko
 // @match        http://*/*
 // @match        https://*/*
@@ -225,12 +225,73 @@ const fetchBuf=(url,onProg)=>new Promise((ok,ng)=>GM_xmlhttpRequest({
     onabort:()=>ng(new Error('Aborted : '+url))
 }));
 
-const readZip=async(src,onP=()=>{})=>{
-    onP('Downloading...');
-    const buf=await src.load((l,t)=>{
-        onP('Downloading '+(t>0?Math.round(l/t*100)+'% ('+fmt(l)+' / '+fmt(t)+')':fmt(l)));
-    });
-    onP('Reading entries...');
+// ---------- RAR (node-unrar-js / WASM) ----------
+const RAR_JS ='https://cdn.jsdelivr.net/npm/node-unrar-js@2.0.2/+esm';
+const RAR_WASM='https://cdn.jsdelivr.net/npm/node-unrar-js@2.0.2/dist/js/unrar.wasm';
+let rarLib=null;
+const loadRar=async()=>{
+    if(rarLib)return rarLib;
+    const wasm=await fetchBuf(RAR_WASM);
+    let mod;
+    try{
+        mod=await import(RAR_JS);                       // まず直接 import
+    }catch(e){
+        // CSP 等で失敗したら GM 経由で取得して Blob URL から import
+        const js=new TextDecoder().decode(await fetchBuf(RAR_JS));
+        mod=await import(URL.createObjectURL(new Blob([js],{type:'text/javascript'})));
+    }
+    return rarLib={mod,wasm};
+};
+
+const isRar=u8=>u8.length>4&&u8[0]===0x52&&u8[1]===0x61&&u8[2]===0x72&&u8[3]===0x21; // "Rar!"
+
+const readRarEntries=async buf=>{
+    const {mod,wasm}=await loadRar();
+    const data=new Uint8Array(buf);
+    const cache=new Map(); // パスワードごとに extractor を使い回す
+    const getEx=pw=>{
+        const k=pw||'';
+        if(!cache.has(k)){
+            const p=Promise.resolve(mod.createExtractorFromData({wasmBinary:wasm,data,password:pw||undefined}));
+            p.catch(()=>cache.delete(k));
+            cache.set(k,p);
+        }
+        return cache.get(k);
+    };
+    const ex=await getEx('');
+    const list=ex.getFileList();
+    const entries=[];
+    for(const h of list.fileHeaders){
+        if(h.flags.directory)continue;
+        const p=h.name.replace(/\\/g,'/');
+        const i=p.lastIndexOf('/');
+        const base=p.slice(i+1);
+        const mime=mimeOf(base);
+        entries.push({
+            name:base,
+            path:p,
+            dir:p.slice(0,i+1),
+            ext:base.includes('.')?base.split('.').pop().toUpperCase():'-',
+            size:h.unpSize||0,
+            date:new Date(h.time).getTime()||0,
+            enc:!!h.flags.encrypted,
+            read:async pw=>{
+                const e2=await getEx(pw);
+                const {files}=e2.extract({files:[h.name]});
+                for(const f of [...files]){ // iterator を最後まで回して展開させる
+                    const x=f.extraction;
+                    const u8=x instanceof Uint8Array?x:(x&&x.data);
+                    if(u8)return new Blob([u8],{type:mime});
+                }
+                throw new Error('Extract failed: no data for '+h.name);
+            }
+        });
+    }
+    return entries;
+};
+
+// ---------- ZIP ----------
+const readZipEntries=async buf=>{
     const reader=new zip.ZipReader(new zip.Uint8ArrayReader(new Uint8Array(buf)));
     const list=await reader.getEntries({filenameEncoding:'shift_jis'});
     const entries=[];
@@ -239,6 +300,7 @@ const readZip=async(src,onP=()=>{})=>{
         const p=f.filename;
         const i=p.lastIndexOf('/');
         const base=p.slice(i+1);
+        const mime=mimeOf(base);
         entries.push({
             name:base,
             path:p,
@@ -247,14 +309,26 @@ const readZip=async(src,onP=()=>{})=>{
             size:f.uncompressedSize||0,
             date:(f.lastModDate||new Date(0)).getTime(),
             enc:!!f.encrypted,
-            ent:f
+            read:pw=>f.getData(new zip.BlobWriter(mime),{password:pw,checkSignature:true})
         });
     }
+    return entries;
+};
+
+const readZip=async(src,onP=()=>{})=>{
+    onP('Downloading...');
+    const buf=await src.load((l,t)=>{
+        onP('Downloading '+(t>0?Math.round(l/t*100)+'% ('+fmt(l)+' / '+fmt(t)+')':fmt(l)));
+    });
+    onP('Reading entries...');
+    const entries=isRar(new Uint8Array(buf,0,Math.min(8,buf.byteLength)))
+        ? await readRarEntries(buf)
+        : await readZipEntries(buf);
     onP('Done ('+entries.length+' files)');
     return {name:src.name,entries};
 };
 
-const isPwErr=e=>/password|signature/i.test((e&&e.message)||'');
+const isPwErr=e=>/password|signature|bad_data|crc|checksum/i.test((e&&e.message)||'');
 
 // ==========================================
 // Dialogs (新しいタブ側)
@@ -272,7 +346,7 @@ const askPw=(doc,name,retry)=>new Promise(res=>{
 });
 
 const getBlob=async(doc,e)=>{
-    const get=pw=>e.ent.getData(new zip.BlobWriter(mimeOf(e.name)),{password:pw,checkSignature:true});
+    const get=pw=>e.read(pw);
     if(!e.enc)return get();
     const cand=[...usedPw,...pwList].filter((x,i,a)=>x!=null&&a.indexOf(x)===i);
     for(const pw of cand){
@@ -313,6 +387,21 @@ const quietBlob=async e=>{
     }
     return null;
 };
+
+/*
+const quietBlob=async e=>{
+    const get=pw=>e.read(pw);
+    if(!e.enc){
+        try{return await get();}catch(err){return null;}
+    }
+    const cand=[...usedPw,...pwList].filter((x,i,a)=>x!=null&&a.indexOf(x)===i);
+    for(const pw of cand){
+        try{return await get(pw);}
+        catch(err){if(!isPwErr(err))return null;}
+    }
+    return null;
+};
+*/
 
 const preview=(win,list,idx0,blob0)=>{
     const doc=win.document;
@@ -691,12 +780,12 @@ const showPanel=()=>{
     }
     const head=$C('div',{attrs:{class:'uz-head'}});
     head.append(
-        $C('span',{props:{textContent:'ZIP Files'}}),
+        $C('span',{props:{textContent:'Archives'}}),
         $C('span',{attrs:{class:'uz-badge'},props:{textContent:sources.size}}),
-        $C('button',{attrs:{type:'button',title:'Scan this page for ZIP links'},props:{textContent:'Scan ZIP'},on:{click:()=>scan(true)}}),
+        $C('button',{attrs:{type:'button',title:'Scan this page for zip/rar links'},props:{textContent:'Scan zip/rar'},on:{click:()=>scan(true)}}),
         $C('button',{attrs:{type:'button'},props:{textContent:'×'},on:{click:()=>{panel.remove();panel=null;}}}));
-    const drop=$C('div',{attrs:{class:'uz-drop'},props:{textContent:'Drop .zip files here'}});
-    const go=$C('button',{attrs:{type:'button',class:'uz-primary'},props:{textContent:'Extract ZIP ('+checked.size+')',disabled:!checked.size},on:{click:()=>extract([...checked].map(k=>sources.get(k)))}});
+    const drop=$C('div',{attrs:{class:'uz-drop'},props:{textContent:'Drop .zip/.rar files here'}});
+    const go=$C('button',{attrs:{type:'button',class:'uz-primary'},props:{textContent:'Extract ('+checked.size+')',disabled:!checked.size},on:{click:()=>extract([...checked].map(k=>sources.get(k)))}});
     panel=$C('div',{attrs:{class:'uz-panel'},on:{
         dragover:e=>{e.preventDefault();panel.classList.add('uz-over');},
         dragleave:e=>{if(!panel.contains(e.relatedTarget))panel.classList.remove('uz-over');},
@@ -704,7 +793,7 @@ const showPanel=()=>{
             e.preventDefault();
             panel.classList.remove('uz-over');
             for(const f of e.dataTransfer.files){
-                if(!f.name.endsWith('.zip'))continue;
+                if(!/\.(zip|rar)$/i.test(f.name))continue;
                 const key='local:'+f.name+':'+f.size;
                 sources.set(key,{name:f.name,load:()=>f.arrayBuffer()});
                 checked.add(key);
@@ -720,7 +809,7 @@ const showPanel=()=>{
 const scan=(show=true)=>{
     for(const el of $SA('[href]')){
         const url=el.href;
-        if(typeof url!=='string'||!url.endsWith('.zip'))continue;
+        if(typeof url!=='string'||!/\.(zip|rar)$/i.test(url))continue;
         let name=url.split('/').pop();
         try{name=decodeURIComponent(name);}catch(e){}
         const label=(el.textContent||'').trim();
@@ -737,5 +826,8 @@ const scan=(show=true)=>{
 };
 
 window.addEventListener('load',()=>scan(false)); // 読み込み時はパネルを出さない
+addEventListener('popstate',()=>scan(false));
+addEventListener('hashchange',()=>scan(false));
+addEventListener('focus',()=>scan(false));
 
-GM_registerMenuCommand('Scan Zip',()=>scan(true));
+GM_registerMenuCommand('Scan',()=>scan(true));
